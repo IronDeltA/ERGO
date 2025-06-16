@@ -15,3 +15,6 @@ Dans ce but, les étapes envisagées doivent permettre au processus d'être évo
 Ces Milestones peuvent être amenées à évoluer au fil du projet
 
 ---------------------------------------------------------------------------------------------------------------------------
+
+Etat d'avancement:
+ + Outil de simulation en cours de rédaction. Robot.py incorpore un module encapsulant une classe Robot comprenant pour l'instant les méthodes de classe permettant la création d'un robot paramétré selon les paramètres Denavit Hartenberg. Plus de détails dans le fichier. le fichier main.py comprend une instantiation élémentaire d'un robot imitant l'architecture UR.

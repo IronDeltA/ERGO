@@ -18,3 +18,10 @@ Ces Milestones peuvent être amenées à évoluer au fil du projet
 
 Etat d'avancement:
  + Outil de simulation en cours de rédaction. Robot.py incorpore un module encapsulant une classe Robot comprenant pour l'instant les méthodes de classe permettant la création d'un robot paramétré selon les paramètres Denavit Hartenberg. Plus de détails dans le fichier. le fichier main.py comprend une instantiation élémentaire d'un robot imitant l'architecture UR.
+
+---------------------------------------------------------------------------------------------------------------------------
+
+Roadmap été 2025:
+ + fin juin 2025 - cinématique directe et inverse numérique + analytique dans le cas d'un poignet sphérique, Application Qt pour la visualisation, possibilité de choisir le type de joint entre prismatique et rotatif et fins de course
+ + Juillet 2025: planification de trajectoire et équations dynamiques (Lagrange, inertie des éléments mécaniques)
+ + août 2025: dimensionnement et modélisation d'un système motoréducteur

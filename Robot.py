@@ -53,6 +53,7 @@ euler = sp.symbols('euler1:4')
 class Robot:
     def __init__(self,
                  joints=0,
+                 t_j=None,
                  theta=None,
                  alpha=None,
                  a=None,
@@ -67,11 +68,26 @@ class Robot:
         else:
             self.nb_j = joints  # nombre de joints
 
+        if t_j is None or not np.any(t_j):
+            self.type_j = np.array(['R', 'R', 'R', 'R', 'R', 'R'])
+        else:
+            self.type_j = t_j
+
         # initialisation des symboles propres
         self.theta_sym = sp.symbols(f'theta1:{self.nb_j+1}')
         self.alpha_sym = sp.symbols(f'alpha1:{self.nb_j+1}')
         self.a_sym = sp.symbols(f'a1:{self.nb_j+1}')
         self.d_sym = sp.symbols(f'd1:{self.nb_j+1}')
+
+        self.euler = sp.symbols('euler1:4')
+        self.x_t, self.y_t, self.z_t = sp.symbols('xt yt zt')
+
+        self.IK = sp.zeros(4)
+        self.IK[:3, :3] = np.dot(np.dot(sp.rot_axis1(self.euler[0]), sp.rot_axis2(self.euler[1])),
+                                 sp.rot_axis3(self.euler[2]))
+        self.IK[:3, 3] = sp.Matrix([self.x_t, self.y_t, self.z_t])
+
+        self.IK_n = sp.lambdify((self.euler, self.x_t, self.y_t, self.z_t), self.IK, 'numpy')
 
         # initialisation des chaînes articulées
         self.links, self.links_cumul = self.links_set()  # tableau matrices DH
@@ -176,23 +192,23 @@ class Robot:
         return self.z
  
     # setter
-    def set_theta(self, t, i=0):
-        if i == 0:
+    def set_theta(self, t, i=None):
+        if i is None:
             self.theta = t
         else:
-            self.theta[i-1] = t
+            self.theta[i] = t
 
     def set_alpha(self, a, i=0):
         if i == 0:
             self.alpha = a
         else:
-            self.alpha[i-1] = a
+            self.alpha[i] = a
 
     def set_a(self, a, i=0):
         if i == 0:
             self.a = a
         else:
-            self.a[i-1] = a
+            self.a[i] = a
 
     def set_d(self, d, i=0):
         if i == 0:
@@ -288,6 +304,7 @@ class Robot:
                              self.x,
                              self.y,
                              self.z)[0:3, 0:3]
+        return None
 
     # fonction de calcul de la jacobienne symbolique et numérique lambdifiée
     def Jac_rob(self):
@@ -312,8 +329,8 @@ class Robot:
                           self.y,
                           self.z)
 
-    # résolution de la cinématique inverse
-    def IK_rob(self, xt, yt, zt, eulert):
+    # résolution de la cinématique inverse (en cours d'écriture)
+    def IK_rob(self, xt, yt, zt, eulert, lam):
         zi = []
         oi = []
         expr = []
@@ -386,14 +403,46 @@ class Robot:
             IK_rot = sp.solve(eq[3:6], self.theta_sym[3:6])
 
             return IK_pos, IK_rot # résol analytique: renvoie les theta pos et theta rot
+        else:
+            # on convertit les angles finaux en radians. RAJOUTER LA POSSIBILITE DE CHOISIR RADIANS OU DEGRES EN ARGUMENT ET CONVERSION ADAPTEE
+            eulert_compute = np.radians(eulert)
+
+            mat_dest = self.IK_n(eulert_compute, xt, yt, zt)
+
+            curr_val = self.DK_num("pose")
+            # calcul de l'erreur relative par transposée de la position actuelle * pose finale souhaitée
+            Err = np.dot(np.transpose(curr_val), mat_dest)
+            R = Err[:3, :3]
+            T = Err[:3, 3]
+
+            theta_to_log = np.arccos((np.trace(R) - 1.0) / 2)
+
+            if theta_to_log < 1e-6:
+                loga_rot = np.zeros((3, 3))
+                axis_rot = np.zeros(3)
+            else:
+                loga_rot = (theta_to_log / (2 * np.sin(theta_to_log))) * (R - np.transpose(R))  # omega hat
+                axis_rot = np.array([loga_rot[2, 1], loga_rot[0, 2], loga_rot[1, 0]])  # omega
+
+            loga_pos = np.eye(3) - (0.5 * loga_rot) + (
+                        1 - (theta_to_log * np.sin(theta_to_log) / (2 * (1 - np.cos(theta_to_log)))) * (
+                            np.dot(loga_rot, loga_rot) / (theta_to_log ** 2)))
+
+            twist = np.concatenate((np.dot(loga_pos, T), axis_rot))
+            lambda_squared = lam
+            J = self.Jac_num()
+            m, n = np.shape(J)
+            I = np.eye(m)
+            ps_jac = np.dot(np.transpose(J), np.linalg.inv(np.dot(J, np.transpose(J)) + lambda_squared * I))
+
+            self.theta = self.theta + 0.1 * (np.dot(ps_jac, twist))
         return None
 
-    # segments computing and adding to the plot
-    def cin_num_comp(self, axe):
+    def cin_num_comp(self):
         x_plt = []
         y_plt = []
         z_plt = []
-        axe_lab = ["seg1", "seg2", "seg3", "seg4", "seg5", "seg6",]
+        axe_lab = ["seg1", "seg2", "seg3", "seg4", "seg5", "seg6", ]
         for i in range(0, self.nb_j):
             if i == 0:
                 x_plt.append([0, self.DK_npart[0](self.theta[i], self.alpha[i],
@@ -408,145 +457,88 @@ class Robot:
                                                self.alpha[0],
                                                self.d[0],
                                                self.a[0])[0, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[0, 3]])
-                y_plt.append([self.DK_npart[i-1](self.theta[0],
-                                                 self.alpha[0],
-                                                 self.d[0],
-                                                 self.a[0])[1, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[1, 3]])
-                z_plt.append([self.DK_npart[i-1](self.theta[0],
-                                                 self.alpha[0],
-                                                 self.d[0],
-                                                 self.a[0])[2, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[2, 3]])
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[0, 3]])
+                y_plt.append([self.DK_npart[i - 1](self.theta[0],
+                                                   self.alpha[0],
+                                                   self.d[0],
+                                                   self.a[0])[1, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[1, 3]])
+                z_plt.append([self.DK_npart[i - 1](self.theta[0],
+                                                   self.alpha[0],
+                                                   self.d[0],
+                                                   self.a[0])[2, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[2, 3]])
 
-            elif i > 1 and i < self.nb_j-1:
-                x_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[0, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[0, 3]])
-                y_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[1, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[1, 3]])
-                z_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[2, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1])[2, 3]])
+            elif i > 1 and i < self.nb_j - 1:
+                x_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[0, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[0, 3]])
+                y_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[1, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[1, 3]])
+                z_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[2, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1])[2, 3]])
             else:
-                x_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[0, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1],
+                x_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[0, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1],
                                                self.x,
                                                self.y,
                                                self.z)[0, 3]])
-                y_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[1, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1],
+                y_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[1, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1],
                                                self.x,
                                                self.y,
                                                self.z)[1, 3]])
-                z_plt.append([self.DK_npart[i-1](self.theta[0:i],
-                                                 self.alpha[0:i],
-                                                 self.d[0:i],
-                                                 self.a[0:i])[2, 3],
-                              self.DK_npart[i](self.theta[0:i+1],
-                                               self.alpha[0:i+1],
-                                               self.d[0:i+1],
-                                               self.a[0:i+1],
+                z_plt.append([self.DK_npart[i - 1](self.theta[0:i],
+                                                   self.alpha[0:i],
+                                                   self.d[0:i],
+                                                   self.a[0:i])[2, 3],
+                              self.DK_npart[i](self.theta[0:i + 1],
+                                               self.alpha[0:i + 1],
+                                               self.d[0:i + 1],
+                                               self.a[0:i + 1],
                                                self.x,
                                                self.y,
                                                self.z)[2, 3]])
-            axe.plot(x_plt[i], y_plt[i], z_plt[i], label=axe_lab[i])
         R = self.DK_num("orientation")
-        axe.quiver(x_plt[self.nb_j-1][1], y_plt[self.nb_j-1][1],
-                   z_plt[self.nb_j-1][1],
-                   *R[:, 0],
-                   length=5,
-                   color='r')
-        axe.quiver(x_plt[self.nb_j-1][1], y_plt[self.nb_j-1][1],
-                   z_plt[self.nb_j-1][1],
-                   *R[:, 1],
-                   length=5,
-                   color='g')
-        axe.quiver(x_plt[self.nb_j-1][1], y_plt[self.nb_j-1][1],
-                   z_plt[self.nb_j-1][1],
-                   *R[:, 2],
-                   length=5,
-                   color='b')
-    
-    # plot de la position du robot et de la position des joints
-    def plot(self):
-
-        # labels axes
-
-        # définition de l'espace de plot
-        fig = plt.figure(figsize=(12, 12))
-        ax = fig.add_subplot(111, projection='3d')
-
-        fig.subplots_adjust(bottom=0.4)
-
-        ax.set_xlim(-50, 50)
-        ax.set_ylim(-50, 50)
-        ax.set_zlim(0, 50)
-
-        # remplissages du ax avec les segments du robots
-        self.cin_num_comp(ax)
-        sliders = []
-        for i in range(self.nb_j):
-            axthet = fig.add_axes([0.25, 0.35 - i*0.03, 0.65, 0.02])
-            slider = wd.Slider(
-                axthet,
-                f'theta[{i}]',
-                -np.pi,
-                np.pi,
-                valinit=0.0
-            )
-            sliders.append(slider)
-
-        def update(val):
-            ax.cla()
-            theta_vals = [s.val for s in sliders]
-            self.set_theta(theta_vals)
-            ax.set_xlim(-50, 50)
-            ax.set_ylim(-50, 50)
-            ax.set_zlim(0, 50)
-            self.cin_num_comp(ax)
-            fig.canvas.draw_idle()
-
-        for s in sliders:
-            s.on_changed(update)
-
-        ax.legend()
-        plt.show()
+        arg1 = x_plt[self.nb_j - 1][1], y_plt[self.nb_j - 1][1], z_plt[self.nb_j - 1][1], *R[:, 0]
+        arg2 = x_plt[self.nb_j - 1][1], y_plt[self.nb_j - 1][1], z_plt[self.nb_j - 1][1], *R[:, 1]
+        arg3 = x_plt[self.nb_j - 1][1], y_plt[self.nb_j - 1][1], z_plt[self.nb_j - 1][1], *R[:, 2]
+        return x_plt, y_plt, z_plt, R, arg1, arg2, arg3
